@@ -134,12 +134,23 @@ def protected_test():
         return jsonify({"error": str(e)}), 500
 
 # Get Profile
-@auth_bp.route('/profile/<user_id>', methods=['GET'])
-def profile(user_id):
+# @auth_bp.route('/profile/<user_id>', methods=['GET'])
+# def profile(user_id):
+#     try:
+#         response = supabase.table('users').select('*').eq('id', user_id).single().execute()
+#         if response.data is None:
+#             return jsonify({"error": "User not found"}), 404
+#         return jsonify(response.data), 200
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+@auth_bp.route('/profile/<auth_uid>', methods=['GET'])
+def profile(auth_uid):
     try:
-        response = supabase.table('users').select('*').eq('id', user_id).single().execute()
+        response = supabase.table('users').select('*').eq('auth_uid', auth_uid).single().execute()
         if response.data is None:
             return jsonify({"error": "User not found"}), 404
         return jsonify(response.data), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
