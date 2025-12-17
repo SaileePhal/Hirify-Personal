@@ -209,7 +209,7 @@ def get_user_applications(user):
 
 
 # ---------------------------------------------
-# 6. GET ALL APPLICATIONS FOR RECRUITER (paginated)
+# 6. GET ALL APPLICATIONS FOR RECRUITER (paginated).  (1st attempt - has issues)
 # GET /applications/recruiter?page=1&page_size=10
 # NOTE: Do NOT rely on PostgREST automatic relationship selection (users(*)). Instead
 #       fetch candidate user info in a second call and attach it.
@@ -278,8 +278,88 @@ def get_user_applications(user):
 
 
 
+# # ---------------------------------------------
+# # 6. GET ALL APPLICATIONS FOR RECRUITER (paginated) (NEW FIXED VERSION)   (2nd attempt)
+# # ---------------------------------------------
+# @user_jobs_bp.route("/applications/recruiter", methods=["GET"])
+# @token_required
+# def get_applications_for_recruiter(user):
+#     if user.get("role") != "recruiter":
+#         return jsonify({"error": "Only recruiters can view applications"}), 403
+
+#     page, page_size = _get_pagination_params()
+#     offset = (page - 1) * page_size
+#     to_index = offset + page_size - 1
+
+#     # 🔥 CRITICAL FIX 1: Read the optional job_id query parameter
+#     filter_job_id = request.args.get("job_id")
+    
+#     try:
+#         # Determine the list of job IDs to filter by:
+        
+#         # Scenario A: Filtering by a specific job ID passed in the URL
+#         if filter_job_id:
+#             # Check if the job actually belongs to the recruiter before proceeding
+#             job_check = supabase.table("jobs").select("id").eq("id", filter_job_id).eq("recruiter_id", user["auth_uid"]).execute()
+#             if not job_check.data:
+#                 # If the job doesn't exist or doesn't belong to this recruiter, return empty list
+#                 return jsonify({"page": page, "page_size": page_size, "total": 0, "applications": []}), 200
+            
+#             job_ids = [filter_job_id] # Only filter by the specific ID
+        
+#         # Scenario B: No job_id passed, fetch ALL jobs for this recruiter
+#         else:
+#             # fetch job ids for this recruiter
+#             jobs_resp = supabase.table("jobs").select("id").eq("recruiter_id", user["auth_uid"]).execute()
+#             job_ids = [j["id"] for j in (jobs_resp.data or [])]
+
+#         if not job_ids:
+#             return jsonify({"page": page, "page_size": page_size, "total": 0, "applications": []}), 200
+
+#         # 🔥 CRITICAL FIX 2: Apply the calculated job_ids list (which might contain only one ID)
+#         apps_query = (
+#             supabase.table("applications")
+#             .select("id, job_id, candidate_id, resume_url, cover_letter, status, applied_at, jobs(company_name, title)")
+#             .in_("job_id", job_ids) # Use the calculated job_ids
+#         )
+
+#         # Execute the paginated response
+#         apps_resp = (
+#             apps_query
+#             .order("applied_at", desc=True)
+#             .range(offset, to_index)
+#             .execute()
+#         )
+
+#         # get total count for these jobs (Use the same .in_() filter)
+#         total_resp = supabase.table("applications").select("id", count="exact").in_("job_id", job_ids).execute()
+#         total = getattr(total_resp, "count", None) or 0
+
+#         applications = apps_resp.data or []
+
+#         # ... (rest of the code for fetching candidate info remains the same)
+
+#         # collect candidate ids and fetch basic user info in bulk (if users table exists)
+#         # ... (This section remains unchanged)
+
+#         # attach candidate info
+#         # ... (This section remains unchanged)
+        
+#         return jsonify({
+#             "page": page,
+#             "page_size": page_size,
+#             "total": total,
+#             "applications": applications
+#         }), 200
+
+#     except Exception as e:
+#         return jsonify({"error": f"Failed to fetch recruiter applications: {str(e)}"}), 500
+
+
+
+
 # ---------------------------------------------
-# 6. GET ALL APPLICATIONS FOR RECRUITER (paginated) (NEW FIXED VERSION)
+# 6. GET ALL APPLICATIONS FOR RECRUITER (FINAL ROBUST VERSION)
 # ---------------------------------------------
 @user_jobs_bp.route("/applications/recruiter", methods=["GET"])
 @token_required
@@ -291,74 +371,115 @@ def get_applications_for_recruiter(user):
     offset = (page - 1) * page_size
     to_index = offset + page_size - 1
 
-    # 🔥 CRITICAL FIX 1: Read the optional job_id query parameter
     filter_job_id = request.args.get("job_id")
     
     try:
-        # Determine the list of job IDs to filter by:
-        
-        # Scenario A: Filtering by a specific job ID passed in the URL
+        # 1. Determine the job IDs to filter by (same logic)
         if filter_job_id:
-            # Check if the job actually belongs to the recruiter before proceeding
             job_check = supabase.table("jobs").select("id").eq("id", filter_job_id).eq("recruiter_id", user["auth_uid"]).execute()
             if not job_check.data:
-                # If the job doesn't exist or doesn't belong to this recruiter, return empty list
                 return jsonify({"page": page, "page_size": page_size, "total": 0, "applications": []}), 200
-            
-            job_ids = [filter_job_id] # Only filter by the specific ID
-        
-        # Scenario B: No job_id passed, fetch ALL jobs for this recruiter
+            job_ids = [filter_job_id] 
         else:
-            # fetch job ids for this recruiter
             jobs_resp = supabase.table("jobs").select("id").eq("recruiter_id", user["auth_uid"]).execute()
             job_ids = [j["id"] for j in (jobs_resp.data or [])]
 
         if not job_ids:
             return jsonify({"page": page, "page_size": page_size, "total": 0, "applications": []}), 200
 
-        # 🔥 CRITICAL FIX 2: Apply the calculated job_ids list (which might contain only one ID)
+        # 2. Fetch applications: NO JOIN for candidate details in this query.
         apps_query = (
             supabase.table("applications")
-            .select("id, job_id, candidate_id, resume_url, cover_letter, status, applied_at, jobs(company_name, title)")
-            .in_("job_id", job_ids) # Use the calculated job_ids
+            .select(
+                "id, job_id, candidate_id, resume_url, cover_letter, status, applied_at, "
+                "jobs(company_name, title)" # Only join to the 'jobs' table
+            )
+            .in_("job_id", job_ids)
         )
 
-        # Execute the paginated response
         apps_resp = (
             apps_query
             .order("applied_at", desc=True)
             .range(offset, to_index)
             .execute()
         )
-
-        # get total count for these jobs (Use the same .in_() filter)
+        
+        # 3. Get total count
         total_resp = supabase.table("applications").select("id", count="exact").in_("job_id", job_ids).execute()
         total = getattr(total_resp, "count", None) or 0
 
         applications = apps_resp.data or []
 
-        # ... (rest of the code for fetching candidate info remains the same)
-
-        # collect candidate ids and fetch basic user info in bulk (if users table exists)
-        # ... (This section remains unchanged)
-
-        # attach candidate info
-        # ... (This section remains unchanged)
+        # 4. Bulk Fetch Candidate Names AND Emails (The two-part lookup)
+        candidate_auth_uids = list({app["candidate_id"] for app in applications if app.get("candidate_id")})
         
+        candidates_map = {}
+        if candidate_auth_uids:
+            # PART A: Fetch Names (from public.users)
+            users_resp = supabase.table("users").select("auth_uid, first_name, last_name").in_("auth_uid", candidate_auth_uids).execute()
+            
+            for u in (users_resp.data or []):
+                # Initialize map entry with name data
+                candidates_map[u["auth_uid"]] = {
+                    "first_name": u.get("first_name", ""), 
+                    "last_name": u.get("last_name", ""),
+                    "email": "N/A" # Placeholder for email
+                }
+
+            # PART B: Fetch Emails (from auth.users)
+            # Since the client blocks the join, we use the Admin Client's user lookup
+            # WARNING: This requires your Supabase client to have Admin privileges, which is standard for a backend service.
+            
+            # NOTE: If your Supabase Python client supports a 'get_users_in' or 'get_users' with a filter:
+            # email_resp = supabase.auth.admin.get_users(uids=candidate_auth_uids) 
+            
+            # If the client only supports getting *all* users or one by one, a compromise is to use the dedicated 'auth' table directly (less recommended but works):
+            # The client library *must* expose a method to efficiently fetch auth users by ID. If not, we fall back to a less efficient loop:
+            
+            # Fallback to fetching one by one (least performant but most reliable if batch is unsupported)
+            for uid in candidate_auth_uids:
+                try:
+                    # Fetch user object from Supabase Auth
+                    user_data = supabase.auth.admin.get_user_by_id(uid)
+                    
+                    if user_data.user and user_data.user.email:
+                        # Update the map entry with the found email
+                        if uid in candidates_map:
+                            candidates_map[uid]["email"] = user_data.user.email
+                        else:
+                            # If a user exists in auth but not in public.users (shouldn't happen for applied users)
+                            candidates_map[uid] = {"first_name": "", "last_name": "", "email": user_data.user.email}
+                            
+                except Exception as auth_error:
+                    print(f"Failed to fetch user {uid} from auth.admin: {auth_error}")
+                    pass # Keep email as N/A or previous placeholder
+
+        
+        # 5. Attach Candidate Info and Format Response
+        formatted_applications = []
+        for app in applications:
+            auth_uid = app.get("candidate_id")
+            
+            # Get name and email data from the bulk lookup map
+            candidate_info = candidates_map.get(auth_uid, {"first_name": "", "last_name": "", "email": "N/A"})
+            
+            formatted_app = {
+                **app, 
+                "candidate_email": candidate_info["email"],
+                "candidate_name": f"{candidate_info['first_name']} {candidate_info['last_name']}".strip(),
+            }
+            formatted_applications.append(formatted_app)
+
         return jsonify({
             "page": page,
             "page_size": page_size,
             "total": total,
-            "applications": applications
+            "applications": formatted_applications
         }), 200
 
     except Exception as e:
+        print(f"Failed to fetch recruiter applications: {str(e)}") 
         return jsonify({"error": f"Failed to fetch recruiter applications: {str(e)}"}), 500
-
-
-
-
-
 
 
 # ---------------------------------------------
